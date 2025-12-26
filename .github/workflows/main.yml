@@ -1,4 +1,3 @@
-
 name: Android Always On
 
 on:
@@ -16,7 +15,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run Android Forever
+      - name: Run Android
         run: |
           docker run -d --name android --privileged \
             -e WEB_VNC=true \
@@ -34,20 +33,66 @@ jobs:
       - name: Tunnel
         uses: AnimMouse/setup-cloudflared@v2
 
-      - name: URL and Keep Alive
+      - name: Get URL and Keep Alive
         run: |
+          # Start tunnel
           cloudflared tunnel --url http://localhost:6080 > tunnel.log 2>&1 &
-          sleep 15
+          TUNNEL_PID=$!
+          
+          # Wait for URL with retry
+          echo "Waiting for tunnel URL..."
+          for i in {1..30}; do
+            sleep 2
+            if grep -q "https://" tunnel.log; then
+              break
+            fi
+            echo "Attempt $i/30..."
+          done
+          
+          # Extract URL
           URL=$(grep -oP 'https://[^s]+.trycloudflare.com' tunnel.log | head -1)
           
-          echo "## Android 14 URL" >> $GITHUB_STEP_SUMMARY
-          echo "[$URL]($URL)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "`$URL`" >> $GITHUB_STEP_SUMMARY
+          if [ -z "$URL" ]; then
+            echo "Checking tunnel.log contents:"
+            cat tunnel.log
+            URL="http://localhost:6080 (tunnel failed)"
+          fi
           
-          # Keep alive forever
+          echo "URL=$URL" >> $GITHUB_ENV
+          
+          # Display URL
+          echo "## ✅ Android 14 Ready!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Access URL:** [$URL]($URL)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          echo "$URL" >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** Running continuously" >> $GITHUB_STEP_SUMMARY
+          
+          echo "=========================================="
+          echo "🎯 ANDROID URL: $URL"
+          echo "=========================================="
+          
+          # Keep alive loop
+          counter=0
           while true; do
-            echo "$(date) - Android running: $URL"
-            docker ps | grep android || docker start android
-            sleep 300
+            counter=$((counter + 1))
+            echo "[$(date)] Minute $counter - Android running at: $URL"
+            
+            # Check container
+            if ! docker ps | grep -q android; then
+              echo "⚠️ Restarting Android..."
+              docker start android
+            fi
+            
+            # Show URL every 10 minutes
+            if [ $((counter % 10)) -eq 0 ]; then
+              echo "=========================================="
+              echo "📱 ACCESS URL: $URL"
+              echo "=========================================="
+            fi
+            
+            sleep 60
           done
