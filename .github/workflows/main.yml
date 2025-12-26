@@ -1,0 +1,94 @@
+name: Android RDP Always On
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'  # Ping every 5 hours
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35000  # Max possible time
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Start Android
+        run: |
+          docker run -d --name android --privileged \
+            -e WEB_VNC=true \
+            -e EMULATOR_DEVICE="Pixel 8 Pro" \
+            -e EMULATOR_WIDTH=1080 \
+            -e EMULATOR_HEIGHT=2400 \
+            -p 6080:6080 \
+            -p 5555:5555 \
+            --device /dev/kvm \
+            --restart=always \
+            budtmo/docker-android:emulator_15.0
+          
+          echo "Starting Android..."
+          sleep 90
+
+      - name: Setup Tunnel
+        uses: AnimMouse/setup-cloudflared@v2
+
+      - name: Start Permanent Tunnel
+        run: |
+          cloudflared tunnel --url http://localhost:6080 > tunnel.log 2>&1 &
+          sleep 15
+          
+          URL=$(grep -oP 'https://[^s]+.trycloudflare.com' tunnel.log | head -1)
+          echo "$URL" > android_url.txt
+          
+          cat > README.md << EOF
+          # Android RDP - Running Now
+          
+          ## Access URL
+          [$URL]($URL)
+          
+          Updated: $(date)
+          EOF
+          
+          git config user.name "bot"
+          git config user.email "bot@github.com"
+          git add README.md android_url.txt
+          git diff --quiet && git diff --staged --quiet || git commit -m "url"
+          git push || true
+          
+          echo "## Android Live" >> $GITHUB_STEP_SUMMARY
+          echo "[$URL]($URL)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Keep Alive Infinite Loop
+        run: |
+          while true; do
+            echo "$(date) - Android alive"
+            
+            # Check and restart if needed
+            if ! docker ps | grep -q android; then
+              docker start android
+            fi
+            
+            # Keep workflow active
+            echo "." >> keepalive.log
+            
+            # Show URL every hour
+            if [ $((RANDOM % 60)) -eq 0 ]; then
+              cat android_url.txt
+            fi
+            
+            sleep 60
+          done
+
+  keepalive:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gautamkrishnar/keepalive-workflow@v2
