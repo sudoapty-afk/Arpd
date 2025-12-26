@@ -20,79 +20,60 @@ jobs:
           docker run -d --name android --privileged \
             -e WEB_VNC=true \
             -e EMULATOR_DEVICE="Samsung Galaxy S10" \
-            -e EMULATOR_WIDTH=1080 \
-            -e EMULATOR_HEIGHT=2400 \
             -p 6080:6080 \
-            -p 5555:5555 \
             --device /dev/kvm \
             budtmo/docker-android:emulator_14.0
-          
-          echo "Starting Android 14..."
           sleep 90
 
-      - name: Tunnel
+      - name: Setup Tunnel
         uses: AnimMouse/setup-cloudflared@v2
 
-      - name: Get URL and Keep Alive
+      - name: Start Tunnel and Monitor
         run: |
-          # Start tunnel
-          cloudflared tunnel --url http://localhost:6080 > tunnel.log 2>&1 &
+          # Start tunnel with better logging
+          cloudflared tunnel --url http://localhost:6080 --metrics localhost:9090 2>&1 | tee tunnel.log &
           TUNNEL_PID=$!
           
-          # Wait for URL with retry
-          echo "Waiting for tunnel URL..."
-          for i in {1..30}; do
-            sleep 2
-            if grep -q "https://" tunnel.log; then
-              break
-            fi
-            echo "Attempt $i/30..."
-          done
+          # Wait for URL
+          echo "⏳ Waiting for tunnel..."
+          sleep 30
           
-          # Extract URL
+          # Try multiple methods to get URL
+          URL=""
+          
+          # Method 1: From logs
           URL=$(grep -oP 'https://[^s]+.trycloudflare.com' tunnel.log | head -1)
           
+          # Method 2: From metrics API
           if [ -z "$URL" ]; then
-            echo "Checking tunnel.log contents:"
-            cat tunnel.log
-            URL="http://localhost:6080 (tunnel failed)"
+            sleep 5
+            URL=$(curl -s http://localhost:9090/metrics 2>/dev/null | grep -oP 'https://[^s]+.trycloudflare.com' | head -1)
           fi
           
-          echo "URL=$URL" >> $GITHUB_ENV
+          # Method 3: Check full log
+          if [ -z "$URL" ]; then
+            echo "Full tunnel log:"
+            cat tunnel.log
+            URL="Check logs above for URL"
+          fi
           
-          # Display URL
-          echo "## ✅ Android 14 Ready!" >> $GITHUB_STEP_SUMMARY
+          # Save and display
+          echo "$URL" > android_url.txt
+          
+          echo "## 🎯 Android 14 Ready" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Access URL:** [$URL]($URL)" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** $URL" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "```" >> $GITHUB_STEP_SUMMARY
-          echo "$URL" >> $GITHUB_STEP_SUMMARY
-          echo "```" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Status:** Running continuously" >> $GITHUB_STEP_SUMMARY
+          echo "Click: [$URL]($URL)" >> $GITHUB_STEP_SUMMARY
           
           echo "=========================================="
-          echo "🎯 ANDROID URL: $URL"
+          echo "📱 ANDROID URL: $URL"
           echo "=========================================="
           
-          # Keep alive loop
-          counter=0
+          # Keep alive
           while true; do
-            counter=$((counter + 1))
-            echo "[$(date)] Minute $counter - Android running at: $URL"
-            
-            # Check container
-            if ! docker ps | grep -q android; then
-              echo "⚠️ Restarting Android..."
-              docker start android
-            fi
-            
-            # Show URL every 10 minutes
-            if [ $((counter % 10)) -eq 0 ]; then
-              echo "=========================================="
-              echo "📱 ACCESS URL: $URL"
-              echo "=========================================="
-            fi
-            
-            sleep 60
+            URL=$(cat android_url.txt)
+            echo "[$(date)] Android: $URL"
+            docker ps | grep android || docker start android
+            sleep 300
           done
